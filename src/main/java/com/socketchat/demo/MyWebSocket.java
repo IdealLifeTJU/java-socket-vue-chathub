@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArraySet;
 
-@ServerEndpoint(value="/websocket/{nickName}")
+@ServerEndpoint(value="/websocket/{roomNum}/{nickName}/{avatarNum}/{channelNum}/{chosenHub}")
 @Component
 public class MyWebSocket {
     //用来存放每个客户端对应的MyWebSocket对象。
@@ -27,24 +27,51 @@ public class MyWebSocket {
     private Session session;
     //客户端昵称
     private String nickName;
-    //存储Session的集合
-    private static Map<String, Session> map = new HashMap<String, Session>();
+    //聊天室编号
+    private int roomNum;
+    //客户端头像
+    private int avatarNum;
+    //客户端聊天室类型
+    private int chosenHub;
+    //频道号
+    private String channelNum;
+    //按房间存储Session
+    private static Map<Integer, Map<String, Session>> rooms = new HashMap<Integer, Map<String, Session>>();
+    static {
+        for(int i=0; i<10; i++){
+            rooms.put(i, new HashMap<String, Session>());
+        }
+    }
     /**
      * 连接建立成功调用的方法
      */
     @OnOpen
-    public void onOpen(Session session, @PathParam("nickName") String nickName) {
+    public void onOpen(Session session, @PathParam("roomNum") int roomNum, @PathParam("nickName") String nickName, @PathParam("avatarNum") int avatarNum
+    , @PathParam("channelNum") String channelNum, @PathParam("chosenHub") int chosenHub) {
         this.session = session;
         this.nickName = nickName;
+        this.avatarNum = avatarNum;
+        this.channelNum = channelNum;
+        this.chosenHub = chosenHub;
+        this.roomNum = roomNum;
 
-        map.put(session.getId(), session);
+        //map.put(session.getId(), session);
+        if(rooms.containsKey(roomNum)){
+            Map<String, Session> map = rooms.get(roomNum);
+            map.put(session.getId(), session);
+        }else{
+            Map<String, Session> map = new HashMap<>();
+            map.put(session.getId(), session);
+            rooms.put(roomNum, map);
+        }
+
         webSocketSet.add(this);
 
         System.out.println("有新用户加入！当前在线人数为" + webSocketSet.size()+"。新用户名为："+this.nickName+"，新用户频道号为"+this.session.getId());
         String msg = getMessage(null,3);
         this.session.getAsyncRemote().sendText(msg);
         String msg1 = getMessage(null,2);
-        broadcastExcludingThis(msg1);
+        broadcastExcludingThis(msg1, this.roomNum);
     }
     /**
      * 连接关闭调用的方法
@@ -52,9 +79,10 @@ public class MyWebSocket {
     @OnClose
     public void onClose() {
         webSocketSet.remove(this);  //从set中删除
-        map.remove(this.session.getId());
+        Map<String, Session> map = rooms.get(this.roomNum);
+        map.remove(session.getId());
         String msg = getMessage(null,4);
-        broadcast(msg);
+        broadcast(msg, this.roomNum);
         System.out.println("用户"+this.session.getId()+"退出！当前在线人数为" + webSocketSet.size());
     }
 
@@ -73,30 +101,19 @@ public class MyWebSocket {
                 String msg = getMessage(null,7);
                 this.session.getAsyncRemote().sendText(msg);
                 String msg1 = getMessage(null,6);
-                broadcastExcludingThis(msg1);
+                broadcastExcludingThis(msg1, this.roomNum);
                 Thread.sleep(200);
             }catch(InterruptedException e) {
                 e.printStackTrace();
             }
-        }/*else if(header == 1){
-            try{
-                String msg = getMessage(null,9);
-                this.session.getAsyncRemote().sendText(msg);
-                String msg1 = getMessage(null,8);
-                broadcastExcludingThis(msg1);
-                Thread.sleep(200);
-            }catch(InterruptedException e) {
-                e.printStackTrace();
-            }
-        }*/
+        }
+
         byte[] temp = new byte[message.capacity()-1];
         message.get(temp,0,temp.length);
         ByteBuffer message1 = ByteBuffer.allocate(temp.length);
         message1.put(temp, 0, temp.length);
         message1.rewind();
-        for (MyWebSocket item : webSocketSet) {
-            item.session.getAsyncRemote().sendBinary(message1);//异步发送消息.
-        }
+        broadcast(message1, this.roomNum);
     }
     /**
      * 收到客户端消息后调用的方法
@@ -116,12 +133,12 @@ public class MyWebSocket {
                 String msg = getMessage(socketMessage.getMsg(),5);
                 this.session.getAsyncRemote().sendText(msg);
                 String msg1 = getMessage(socketMessage.getMsg(),1);
-                broadcastExcludingThis(msg1);
+                broadcastExcludingThis(msg1, this.roomNum);
             }else if(socketMessage.getType() == 4){
                 String msg = getMessage(socketMessage.getMsg(),9);
                 this.session.getAsyncRemote().sendText(msg);
                 String msg1 = getMessage(socketMessage.getMsg(),8);
-                broadcastExcludingThis(msg1);
+                broadcastExcludingThis(msg1, this.roomNum);
             }
         }catch(JsonParseException e){
             e.printStackTrace();
@@ -146,21 +163,14 @@ public class MyWebSocket {
     public String getMessage(String content, int type){
         JSONObject msg = new JSONObject();
         msg.put("type",type);
-        msg.put("userNum",map.size());
-        if(type==3){
-            msg.put("content",this.session.getId());
-        }else if(type==2 || type==4 || type==6){
-            msg.put("nickName",this.nickName);
-        }else if(type==1){
+        msg.put("userNum", rooms.get(this.roomNum).size());
+        msg.put("nickName", this.nickName);
+        msg.put("avatarNum", this.avatarNum);
+        if(type==3) {
+            msg.put("content", this.session.getId());
+        }else if(type==1 || type == 5){
             msg.put("content",content);
-            msg.put("nickName",this.nickName);
-        }else if(type==5) {
-            msg.put("content", content);
-        }else if(type==7){
-        }else if(type==8){
-            msg.put("nickName",this.nickName);
-            msg.put("fileName",content);
-        }else if(type == 9){
+        }else if(type == 8 || type == 9){
             msg.put("fileName",content);
         }
         return msg.toString();
@@ -193,6 +203,45 @@ public class MyWebSocket {
         for(MyWebSocket item: webSocketSet){
             if(!item.session.getId().equals(this.session.getId())){
                 item.session.getAsyncRemote().sendText(message);
+            }
+        }
+    }
+
+    /**
+     * 按照房间号群发
+     * @param message
+     */
+    public void broadcast(String message, int roomNum){
+        Map<String, Session> map = rooms.get(roomNum);
+        for(MyWebSocket item: webSocketSet){
+            if(map.containsKey(item.session.getId())){
+                item.session.getAsyncRemote().sendText(message);
+            }
+        }
+    }
+
+    /**
+     * 按照房间号群发，但自己客户端不发
+     * @param message
+     */
+    public void broadcastExcludingThis(String message, int roomNum){
+        Map<String, Session> map = rooms.get(roomNum);
+        for(MyWebSocket item: webSocketSet){
+            if(map.containsKey(item.session.getId()) && item.session.getId() != session.getId()){
+                item.session.getAsyncRemote().sendText(message);
+            }
+        }
+    }
+
+    /**
+     * 按照房间号群发二进制数据
+     * @param message
+     */
+    public void broadcast(ByteBuffer message, int roomNum){
+        Map<String, Session> map = rooms.get(roomNum);
+        for(MyWebSocket item: webSocketSet){
+            if(map.containsKey(item.session.getId())){
+                item.session.getAsyncRemote().sendBinary(message);
             }
         }
     }
