@@ -4,6 +4,7 @@ import com.alibaba.fastjson.JSONObject;
 import com.fasterxml.jackson.core.JsonParseException;
 import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+//import jdk.internal.net.http.common.SequentialScheduler;
 import org.springframework.stereotype.Component;
 
 import javax.websocket.*;
@@ -12,17 +13,20 @@ import javax.websocket.server.ServerEndpoint;
 import java.io.IOError;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.CopyOnWriteArraySet;
 
-@ServerEndpoint(value="/websocket/{roomNum}/{nickName}/{avatarNum}/{channelNum}/{chosenHub}")
+@ServerEndpoint(value="/websocket/{roomNum}/{nickName}/{avatarNum}/{chosenHub}")
 @Component
 public class MyWebSocket {
     //用来存放每个客户端对应的MyWebSocket对象。
     private static CopyOnWriteArraySet<MyWebSocket> webSocketSet = new CopyOnWriteArraySet<MyWebSocket>();
+    //公共房间总数
+    private static int PUBLIC_ROOM_NUM = 6;
+    //二人房间号偏移，为使预设的公共房间号不重合
+    private static int ROOM_NUMBER_OFFSET = 100;
+    //匿名二人房间号偏移，为使匿名房间与其他房间补充和
+    private static int ANONYMOUS_ROOM_NUMBER_OFFSET = 10000;
     //与某个客户端的连接会话，需要通过它来给客户端发送数据
     private Session session;
     //客户端昵称
@@ -33,12 +37,14 @@ public class MyWebSocket {
     private int avatarNum;
     //客户端聊天室类型
     private int chosenHub;
-    //频道号
-    private String channelNum;
     //按房间存储Session
     private static Map<Integer, Map<String, Session>> rooms = new HashMap<Integer, Map<String, Session>>();
+    //匿名房间号集合
+    private static LinkedList<Integer> anonymousRoomNum = new LinkedList<>();
+
+
     static {
-        for(int i=0; i<10; i++){
+        for(int i=0; i<PUBLIC_ROOM_NUM; i++){
             rooms.put(i, new HashMap<String, Session>());
         }
     }
@@ -47,27 +53,53 @@ public class MyWebSocket {
      */
     @OnOpen
     public void onOpen(Session session, @PathParam("roomNum") int roomNum, @PathParam("nickName") String nickName, @PathParam("avatarNum") int avatarNum
-    , @PathParam("channelNum") String channelNum, @PathParam("chosenHub") int chosenHub) {
+    ,  @PathParam("chosenHub") int chosenHub) {
         this.session = session;
         this.nickName = nickName;
         this.avatarNum = avatarNum;
-        this.channelNum = channelNum;
         this.chosenHub = chosenHub;
         this.roomNum = roomNum;
 
-        //map.put(session.getId(), session);
-        if(rooms.containsKey(roomNum)){
-            Map<String, Session> map = rooms.get(roomNum);
+
+        if(chosenHub == 0){
+            Map<String, Session> map = rooms.get(this.roomNum);
             map.put(session.getId(), session);
-        }else{
-            Map<String, Session> map = new HashMap<>();
-            map.put(session.getId(), session);
-            rooms.put(roomNum, map);
+        }else if(chosenHub == 1){
+            this.roomNum += ROOM_NUMBER_OFFSET;
+            if(rooms.containsKey(this.roomNum)){
+                Map<String, Session> map = rooms.get(this.roomNum);
+                if(map.size()<2){
+                    map.put(session.getId(), session);
+                }else{
+                    session.getAsyncRemote().sendText(getMessage(null,10));
+                    return;
+                }
+            }else{
+                Map<String, Session> map = new HashMap<>();
+                map.put(session.getId(), session);
+                this.rooms.put(this.roomNum, map);
+            }
+        }else if(chosenHub == 2){
+            if(anonymousRoomNum.size() == 0){
+                this.roomNum += ANONYMOUS_ROOM_NUMBER_OFFSET;
+                Random random = new Random();
+                int randomNum = random.nextInt();
+                this.roomNum += randomNum;
+
+                Map<String, Session> map = new HashMap<>();
+                map.put(this.session.getId(), this.session);
+                rooms.put(this.roomNum, map);
+                anonymousRoomNum.addLast(this.roomNum);
+            }else{
+                int roomId = anonymousRoomNum.removeFirst();
+                Map<String, Session> map = rooms.get(roomId);
+                map.put(this.session.getId(), this.session);
+                this.roomNum = roomId;
+            }
         }
 
         webSocketSet.add(this);
-
-        System.out.println("有新用户加入！当前在线人数为" + webSocketSet.size()+"。新用户名为："+this.nickName+"，新用户频道号为"+this.session.getId());
+        System.out.println("有新用户加入！当前在线人数为" + webSocketSet.size()+"。新用户名为："+this.nickName+"，新用户房间号为"+this.roomNum);
         String msg = getMessage(null,3);
         this.session.getAsyncRemote().sendText(msg);
         String msg1 = getMessage(null,2);
@@ -121,8 +153,14 @@ public class MyWebSocket {
      * @param message 客户端发送过来的消息*/
     @OnMessage
     public void onMessage(String message, Session session, @PathParam("nickName") String nickName) {
+        //首先查看是否心跳检测
+        if(message.equals("123456789")){
+            this.session.getAsyncRemote().sendText("123456789");
+            return;
+        }
         System.out.println("来自" + session.getId() + "的消息："+ message);
         System.out.println(this.session.getId() + " " + this.nickName);
+
         //从客户端传过来的数据是json数据，所以这里使用jackson进行转换为SocketMsg对象，
         // 然后通过socketMsg的type进行判断是单聊还是群聊，进行相应的处理:
         ObjectMapper objectMapper = new ObjectMapper();
@@ -157,6 +195,7 @@ public class MyWebSocket {
      *                     7 用户向服务器发送信息之后回显的图片数据，只包含头信息，数据随后发送
      *                     8 服务器转发的来自于其他客户端的文件数据，只包含头信息，数据随后发送
      *                     9 用户向服务器发送文件之后回显的文件数据，只包含头信息，数据随后发送
+     *                     10 服务器向客户端回显的连接失败信息
      * @param
      * @return String 返回类型：String
      */
@@ -166,7 +205,7 @@ public class MyWebSocket {
         msg.put("userNum", rooms.get(this.roomNum).size());
         msg.put("nickName", this.nickName);
         msg.put("avatarNum", this.avatarNum);
-        if(type==3) {
+        if(type==3 || type==10) {
             msg.put("content", this.session.getId());
         }else if(type==1 || type == 5){
             msg.put("content",content);
