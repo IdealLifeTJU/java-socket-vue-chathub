@@ -12,11 +12,13 @@ import javax.websocket.server.PathParam;
 import javax.websocket.server.ServerEndpoint;
 import java.io.IOError;
 import java.io.IOException;
+import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArraySet;
 
 @ServerEndpoint(value="/websocket/{roomNum}/{nickName}/{avatarNum}/{chosenHub}")
+
 @Component
 public class MyWebSocket {
     //用来存放每个客户端对应的MyWebSocket对象。
@@ -53,7 +55,7 @@ public class MyWebSocket {
      */
     @OnOpen
     public void onOpen(Session session, @PathParam("roomNum") int roomNum, @PathParam("nickName") String nickName, @PathParam("avatarNum") int avatarNum
-    ,  @PathParam("chosenHub") int chosenHub) {
+    ,  @PathParam("chosenHub") int chosenHub){
         this.session = session;
         this.nickName = nickName;
         this.avatarNum = avatarNum;
@@ -144,7 +146,7 @@ public class MyWebSocket {
         message.get(temp,0,temp.length);
         ByteBuffer message1 = ByteBuffer.allocate(temp.length);
         message1.put(temp, 0, temp.length);
-        message1.rewind();
+        ((Buffer)message1).position(0);
         broadcast(message1, this.roomNum);
     }
     /**
